@@ -13,7 +13,9 @@ services:
       - qdrant_data:/qdrant/storage
 
   backend:
-    build: ./backend
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
     environment:
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-local-384}
       - LLM_PROVIDER=${LLM_PROVIDER:-stub}
@@ -32,7 +34,9 @@ services:
         condition: service_healthy
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
     environment:
       - NEXT_PUBLIC_API_BASE=${NEXT_PUBLIC_API_BASE:-http://localhost:8000}
     ports:

@@ -1,9 +1,16 @@
-FROM node:20-alpine
+FROM node:20
+
 WORKDIR /app
-COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm install --legacy-peer-deps || yarn || true
-WORKDIR /app
-COPY frontend .
+
+COPY package.json package-lock.json ./
+RUN npm ci --legacy-peer-deps
+
+COPY . .
+
+ARG NEXT_PUBLIC_API_BASE
+ENV NEXT_PUBLIC_API_BASE=$NEXT_PUBLIC_API_BASE
+
 RUN npm run build
+
 EXPOSE 3000
 CMD ["npm", "start"]

@@ -7,6 +7,8 @@ A local-first RAG starter with **FastAPI** (backend), **Next.js** (frontend), an
 
 1) **Copy `.env.example` → `.env`** and edit as needed.
 
+1.1) Run npm i in /frontend
+
 2) **Run everything**:
 ```bash
 docker compose up --build
