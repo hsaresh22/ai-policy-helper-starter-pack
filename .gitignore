@@ -4,3 +4,6 @@ ai-policy-helper-starter-pack-3/.DS_Store
 .DS_Store
 backend/.DS_Store
 frontend/.DS_Store
+backend/venv/
+backend/app/__pycache__/
+backend/app/tests/__pycache__/
