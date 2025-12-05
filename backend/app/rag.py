@@ -70,7 +70,10 @@ class QdrantStore:
     def upsert(self, vectors: List[np.ndarray], metadatas: List[Dict]):
         points = []
         for i, (v, m) in enumerate(zip(vectors, metadatas)):
-            points.append(qm.PointStruct(id=m.get("id") or m.get("hash") or i, vector=v.tolist(), payload=m))
+            # Convert hash to a numeric ID using first 8 bytes as integer
+            h = m.get("hash") or m.get("id") or str(i)
+            numeric_id = int.from_bytes(hashlib.sha1(h.encode()).digest()[:8], "big") % (2**31 - 1)
+            points.append(qm.PointStruct(id=numeric_id, vector=v.tolist(), payload=m))
         self.client.upsert(collection_name=self.collection, points=points)
 
     def search(self, query: np.ndarray, k: int = 4) -> List[Tuple[float, Dict]]:
@@ -114,6 +117,41 @@ class OpenAILLM:
             temperature=0.1
         )
         return resp.choices[0].message.content
+    
+class OpenRouterLLM:
+    def __init__(self, api_key: str, model: str = "openai/gpt-4o-mini"):
+        import requests
+        self.api_key = api_key
+        self.model = model
+        self.base_url = "https://openrouter.ai/api/v1"
+        self.requests = requests
+
+    def generate(self, query: str, contexts: List[Dict]) -> str:
+        try:
+            prompt = f"You are a helpful company policy assistant. Cite sources by title and section when relevant.\nQuestion: {query}\nSources:\n"
+            for c in contexts:
+                prompt += f"- {c.get('title')} | {c.get('section')}\n{c.get('text')[:600]}\n---\n"
+            prompt += "Write a concise, accurate answer grounded in the sources. If unsure, say so."
+            
+            resp = self.requests.post(
+                f"{self.base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": self.model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.1,
+                }
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data["choices"][0]["message"]["content"]
+        except Exception as e:
+            # Fallback to stub if OpenRouter call fails
+            print(f"OpenRouter API error: {e}. Falling back to stub response.")
+            return StubLLM().generate(query, contexts)
 
 # ---- RAG Orchestrator & Metrics ----
 class Metrics:
@@ -155,7 +193,17 @@ class RAGEngine:
             except Exception:
                 self.llm = StubLLM()
                 self.llm_name = "stub"
+        elif settings.llm_provider == "openrouter" and settings.openrouter_api_key:
+            try:
+                print("Using OpenRouter LLM")
+                self.llm = OpenRouterLLM(api_key=settings.openrouter_api_key, model=settings.openrouter_model)
+                self.llm_name = f"openrouter:{settings.openrouter_model}"
+            except Exception as e:
+                print(f"OpenRouter initialization failed: {e}. Falling back to stub.")
+                self.llm = StubLLM()
+                self.llm_name = "stub"
         else:
+            print(f"Falling back to stub (provider={settings.llm_provider}, has_key={bool(settings.openrouter_api_key)})")
             self.llm = StubLLM()
             self.llm_name = "stub"
 
