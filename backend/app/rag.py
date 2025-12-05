@@ -118,6 +118,27 @@ class OpenAILLM:
         )
         return resp.choices[0].message.content
     
+    def generate_stream(self, query: str, contexts: List[Dict]):
+        """Stream response tokens as they arrive from OpenAI"""
+        prompt = f"You are a helpful company policy assistant. Cite sources by title and section when relevant.\nQuestion: {query}\nSources:\n"
+        for c in contexts:
+            prompt += f"- {c.get('title')} | {c.get('section')}\n{c.get('text')[:600]}\n---\n"
+        prompt += "Write a concise, accurate answer grounded in the sources. If unsure, say so."
+        
+        try:
+            stream = self.client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role":"user","content":prompt}],
+                temperature=0.1,
+                stream=True
+            )
+            for chunk in stream:
+                if chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+        except Exception as e:
+            print(f"OpenAI streaming error: {e}")
+            yield ""
+    
 class OpenRouterLLM:
     def __init__(self, api_key: str, model: str = "openai/gpt-4o-mini"):
         import requests
@@ -143,15 +164,107 @@ class OpenRouterLLM:
                     "model": self.model,
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0.1,
-                }
+                    "stream": True,
+                },
+                stream=True
             )
             resp.raise_for_status()
-            data = resp.json()
-            return data["choices"][0]["message"]["content"]
+            
+            # Collect streamed response
+            full_response = ""
+            buffer = ""
+            
+            for chunk in resp.iter_content(chunk_size=1024, decode_unicode=False):
+                # Decode bytes to UTF-8 string explicitly
+                text_chunk = chunk.decode('utf-8', errors='replace')
+                buffer += text_chunk
+                while True:
+                    try:
+                        # Find the next complete SSE line
+                        line_end = buffer.find('\n')
+                        if line_end == -1:
+                            break
+
+                        line = buffer[:line_end].strip()
+                        buffer = buffer[line_end + 1:]
+
+                        if line.startswith('data: '):
+                            data = line[6:]
+                            if data == '[DONE]':
+                                break
+
+                            try:
+                                data_obj = json.loads(data)
+                                content = data_obj["choices"][0]["delta"].get("content")
+                                if content:
+                                    full_response += content
+                            except json.JSONDecodeError:
+                                pass
+                    except Exception:
+                        break
+            
+            return full_response if full_response else "No response received from OpenRouter"
         except Exception as e:
             # Fallback to stub if OpenRouter call fails
             print(f"OpenRouter API error: {e}. Falling back to stub response.")
             return StubLLM().generate(query, contexts)
+    
+    def generate_stream(self, query: str, contexts: List[Dict]):
+        """Stream response tokens as they arrive from OpenRouter"""
+        try:
+            prompt = f"You are a helpful company policy assistant. Cite sources by title and section when relevant.\nQuestion: {query}\nSources:\n"
+            for c in contexts:
+                prompt += f"- {c.get('title')} | {c.get('section')}\n{c.get('text')[:600]}\n---\n"
+            prompt += "Write a concise, accurate answer grounded in the sources. If unsure, say so."
+            
+            resp = self.requests.post(
+                f"{self.base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": self.model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.1,
+                    "stream": True,
+                },
+                stream=True,
+                timeout=120
+            )
+            resp.raise_for_status()
+            
+            buffer = ""
+            for chunk in resp.iter_content(chunk_size=1024, decode_unicode=False):
+                # Decode bytes to UTF-8 string explicitly
+                text_chunk = chunk.decode('utf-8', errors='replace')
+                buffer += text_chunk
+                while True:
+                    try:
+                        line_end = buffer.find('\n')
+                        if line_end == -1:
+                            break
+
+                        line = buffer[:line_end].strip()
+                        buffer = buffer[line_end + 1:]
+
+                        if line.startswith('data: '):
+                            data = line[6:]
+                            if data == '[DONE]':
+                                break
+
+                            try:
+                                data_obj = json.loads(data)
+                                content = data_obj["choices"][0]["delta"].get("content")
+                                if content:
+                                    yield content
+                            except json.JSONDecodeError:
+                                pass
+                    except Exception:
+                        break
+        except Exception as e:
+            print(f"OpenRouter streaming error: {e}")
+            yield ""
 
 # ---- RAG Orchestrator & Metrics ----
 class Metrics:
@@ -247,6 +360,19 @@ class RAGEngine:
         answer = self.llm.generate(query, contexts)
         self.metrics.add_generation((time.time()-t0)*1000.0)
         return answer
+
+    def generate_stream(self, query: str, contexts: List[Dict]):
+        """Stream generation token by token from the LLM"""
+        t0 = time.time()
+        # Use LLM's streaming if available, otherwise fall back to non-streaming
+        if hasattr(self.llm, 'generate_stream'):
+            for chunk in self.llm.generate_stream(query, contexts):
+                yield chunk
+        else:
+            # Fallback for StubLLM
+            answer = self.llm.generate(query, contexts)
+            yield answer
+        self.metrics.add_generation((time.time()-t0)*1000.0)
 
     def stats(self) -> Dict:
         m = self.metrics.summary()

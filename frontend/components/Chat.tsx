@@ -1,6 +1,6 @@
 'use client';
 import React from 'react';
-import { apiAsk } from '../lib/api';
+import { apiAskStream } from '../lib/api';
 
 type Message = { role: 'user' | 'assistant', content: string, citations?: {title:string, section?:string}[], chunks?: {title:string, section?:string, text:string}[] };
 
@@ -8,23 +8,69 @@ export default function Chat() {
   const [messages, setMessages] = React.useState<Message[]>([]);
   const [q, setQ] = React.useState('');
   const [loading, setLoading] = React.useState(false);
+  const contentRef = React.useRef('');
+  const citationsRef = React.useRef<any[]>([]);
+  const chunksRef = React.useRef<any[]>([]);
+  const messagesEndRef = React.useRef<HTMLDivElement>(null);
 
   const send = async () => {
     if (!q.trim()) return;
+    console.log('Sending query:', q);
     const my = { role: 'user' as const, content: q };
     setMessages(m => [...m, my]);
+    
+    // Add empty assistant message that will be updated
+    setMessages(m => [...m, { role: 'assistant', content: '', citations: [], chunks: [] }]);
     setLoading(true);
+    
+    contentRef.current = '';
+    citationsRef.current = [];
+    chunksRef.current = [];
+    
     try {
-      const res = await apiAsk(q);
-      const ai: Message = { role: 'assistant', content: res.answer, citations: res.citations, chunks: res.chunks };
-      setMessages(m => [...m, ai]);
+      console.log('Starting stream...');
+      await apiAskStream(q, 4, (chunk) => {
+        console.log('Chunk received in Chat:', chunk.type, chunk.data ? chunk.data.slice ? chunk.data.slice(0, 50) : chunk.data : '');
+        if (chunk.type === 'metadata') {
+          console.log('Got metadata');
+          citationsRef.current = chunk.data.citations || [];
+          chunksRef.current = chunk.data.chunks || [];
+          setMessages(m => {
+            const updated = [...m];
+            updated[updated.length - 1] = {
+              ...updated[updated.length - 1],
+              citations: citationsRef.current,
+              chunks: chunksRef.current
+            };
+            return updated;
+          });
+        } else if (chunk.type === 'chunk') {
+          console.log('Got chunk of text:', chunk.data);
+          contentRef.current += chunk.data;
+          setMessages(m => {
+            const updated = [...m];
+            updated[updated.length - 1] = {
+              ...updated[updated.length - 1],
+              content: contentRef.current
+            };
+            return updated;
+          });
+        }
+      });
+      console.log('Stream completed');
     } catch (e:any) {
+      console.error('Stream error:', e);
       setMessages(m => [...m, { role: 'assistant', content: 'Error: ' + e.message }]);
     } finally {
       setLoading(false);
       setQ('');
     }
   };
+
+  // Auto-scroll to bottom when messages update
+  React.useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
   return (
     <div className="card">
@@ -35,10 +81,13 @@ export default function Chat() {
             <div style={{fontSize:12, color:'#666'}}>{m.role === 'user' ? 'You' : 'Assistant'}</div>
             <div>{m.content}</div>
             {m.citations && m.citations.length>0 && (
-              <div style={{marginTop:6}}>
-                {m.citations.map((c, idx) => (
-                  <span key={idx} className="badge" title={c.section || ''}>{c.title}</span>
-                ))}
+              <div style={{marginTop:8, paddingLeft: 16}}>
+                <strong style={{fontSize:12, color:'#666'}}>Citations:</strong>
+                <ul style={{margin:'4px 0', paddingLeft: 20, fontSize:12}}>
+                  {m.citations.map((c, idx) => (
+                    <li key={idx} title={c.section || ''}>{c.title}{c.section ? ` — ${c.section}` : ''}</li>
+                  ))}
+                </ul>
               </div>
             )}
             {m.chunks && m.chunks.length>0 && (
@@ -54,6 +103,7 @@ export default function Chat() {
             )}
           </div>
         ))}
+        <div ref={messagesEndRef} />
       </div>
       <div style={{display:'flex', gap:8}}>
         <input placeholder="Ask about policy or products..." value={q} onChange={e=>setQ(e.target.value)} style={{flex:1, padding:10, borderRadius:8, border:'1px solid #ddd'}} onKeyDown={(e)=>{ if(e.key==='Enter') send(); }}/>
